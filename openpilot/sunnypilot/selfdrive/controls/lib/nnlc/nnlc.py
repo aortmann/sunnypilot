@@ -8,8 +8,7 @@ from collections import deque
 import math
 import numpy as np
 
-from opendbc.car.lateral import FRICTION_THRESHOLD, get_friction
-from opendbc.sunnypilot.car.interfaces import LatControlInputs
+from opendbc.car.lateral import FRICTION_THRESHOLD
 from opendbc.sunnypilot.car.lateral_ext import get_friction as get_friction_in_torque_space
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.params import Params
@@ -76,22 +75,9 @@ class NeuralNetworkLateralControl(LatControlTorqueJerkAware):
     super().update_lateral_lag(lag)
     self.nn_future_times = [t + self.desired_lat_jerk_time for t in self.future_times]
 
-  def update_feedforward_torque_space(self, CS):
-    torque_from_setpoint = self.torque_from_lateral_accel_in_torque_space(LatControlInputs(self._setpoint, self._roll_compensation, CS.vEgo, CS.aEgo),
-                                                                          self.torque_params, gravity_adjusted=False)
-    torque_from_measurement = self.torque_from_lateral_accel_in_torque_space(LatControlInputs(self._measurement, self._roll_compensation, CS.vEgo, CS.aEgo),
-                                                                             self.torque_params, gravity_adjusted=False)
-    self._pid_log.error = float(torque_from_setpoint - torque_from_measurement)  # ty: ignore[invalid-assignment]
-    self._ff = self.torque_from_lateral_accel_in_torque_space(LatControlInputs(self._gravity_adjusted_lateral_accel, self._roll_compensation,
-                                                                               CS.vEgo, CS.aEgo), self.torque_params, gravity_adjusted=True)
-    self._ff += get_friction_in_torque_space(self._desired_lateral_accel - self._actual_lateral_accel, self._lateral_accel_deadzone,
-                                             FRICTION_THRESHOLD, self.torque_params)
-
   def update_neural_network_feedforward(self, CS, params, calibrated_pose) -> None:
     if not self._nnlc_enabled:
       return
-
-    self.update_feedforward_torque_space(CS)
 
     low_speed_factor = float(np.interp(CS.vEgo, LOW_SPEED_X, LOW_SPEED_Y)) ** 2
     self._setpoint = self._desired_lateral_accel + low_speed_factor * self._desired_curvature
@@ -153,8 +139,11 @@ class NeuralNetworkLateralControl(LatControlTorqueJerkAware):
                + past_rolls + future_rolls
     self._ff = self.model.evaluate(nn_input)
 
-    # apply friction override for cars with low NN friction response
+    # apply friction override for cars with low NN friction response, as a torque-space feedforward term
+    # (same formulation as the jerk-aware controller) built from the un-amplified lateral acceleration error,
+    # so that it is neither scaled by the low-speed term nor by the PID gains
     if self.model.friction_override:
-      self._pid_log.error += get_friction(friction_input, self._lateral_accel_deadzone, FRICTION_THRESHOLD, self.torque_params)
+      override_input = self.update_friction_input(self._desired_lateral_accel, self._actual_lateral_accel)
+      self._ff += get_friction_in_torque_space(override_input, self._lateral_accel_deadzone, FRICTION_THRESHOLD, self.torque_params)
 
     self.update_output_torque(CS)

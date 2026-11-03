@@ -5,6 +5,7 @@ This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
 
+from opendbc.car.structs import car
 from openpilot.cereal import messaging, custom
 
 from openpilot.common.params import Params
@@ -12,9 +13,13 @@ from openpilot.common.realtime import DT_MDL
 from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
 
+GearShifter = car.CarState.GearShifter
+
 GREEN_LIGHT_X_THRESHOLD = 30
 LEAD_DEPART_DIST_THRESHOLD = 1.0
 TRIGGER_TIMER_THRESHOLD = 0.3
+# no green light / lead departure chimes while parked, reversing or in neutral
+NON_DRIVING_GEARS = (GearShifter.park, GearShifter.reverse, GearShifter.neutral, GearShifter.unknown)
 
 
 class E2EStates:
@@ -71,7 +76,7 @@ class E2EAlertsHelper:
       self.last_moving_frame = self.frame
     recent_moving = self.last_moving_frame == -1 or (self.frame - self.last_moving_frame) * DT_MDL < 2.0
 
-    self.allowed = not moving and not CS.gasPressed and not CC.enabled and not recent_moving
+    self.allowed = not moving and not CS.gasPressed and not CC.enabled and not recent_moving and CS.gearShifter not in NON_DRIVING_GEARS
 
     # Green Light Alert
     green_light_trigger = False

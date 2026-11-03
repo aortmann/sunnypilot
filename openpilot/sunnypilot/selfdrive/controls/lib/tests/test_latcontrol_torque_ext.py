@@ -4,6 +4,7 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
+import math
 import numpy as np
 
 from openpilot.cereal import log, messaging
@@ -107,3 +108,49 @@ class TestLatControlTorqueExt(OpenpilotTestCase):
     controller, VM, _ = _make_controller(enhanced=True, nnlc=True)
     output_torque, _, pid_log = _run_update(controller, VM)
     assert pid_log.active
+
+  def test_nnlc_pid_is_independent_of_host(self):
+    # the NNLC extension runs its own constant-gain PID in torque space, not the host's speed-scheduled one
+    controller, VM, _ = _make_controller(enhanced=False, nnlc=True)
+    ext = controller.extension
+    assert ext._pid is not controller.pid
+    assert ext._pid.pos_limit == 1.0 and ext._pid.neg_limit == -1.0
+    for speed in (1.0, 2.0, 5.0, 30.0):
+      ext._pid.speed = speed
+      assert ext._pid.k_p == 1.0
+      assert ext._pid.k_i == 0.3
+
+  def test_jerk_aware_pid_keeps_host_gain_schedule(self):
+    controller, VM, _ = _make_controller(enhanced=True, nnlc=False)
+    ext = controller.extension
+    assert ext._pid is not controller.pid
+    assert ext._pid.pos_limit == 1.0 and ext._pid.neg_limit == -1.0
+    for speed in (1.0, 2.0, 5.0, 30.0):
+      ext._pid.speed = controller.pid.speed = speed
+      assert ext._pid.k_p == controller.pid.k_p
+      assert ext._pid.k_i == controller.pid.k_i
+
+  def test_update_logs_extension_pid(self):
+    controller, VM, _ = _make_controller(enhanced=True, nnlc=False)
+    output_torque, _, pid_log = _run_update(controller, VM)
+    ext = controller.extension
+    # the log fields are float32
+    assert math.isclose(pid_log.p, ext._pid.p, rel_tol=1e-6, abs_tol=1e-6)
+    assert math.isclose(pid_log.i, ext._pid.i, rel_tol=1e-6, abs_tol=1e-6)
+    assert math.isclose(pid_log.f, ext._pid.f, rel_tol=1e-6, abs_tol=1e-6)
+    assert output_torque == -float(ext._pid.control)
+
+  def test_update_nnlc_logs_extension_pid(self):
+    controller, VM, _ = _make_controller(enhanced=False, nnlc=True)
+    output_torque, _, pid_log = _run_update(controller, VM)
+    ext = controller.extension
+    assert ext._nnlc_enabled
+    assert pid_log.p == float(ext._pid.p)
+    assert pid_log.p == pid_log.error  # KP = 1 in torque space
+    assert output_torque == -float(ext._pid.control)
+
+  def test_reset_clears_extension_integrator(self):
+    controller, VM, _ = _make_controller(enhanced=True, nnlc=False)
+    controller.extension._pid.i = 0.1
+    controller.reset()
+    assert controller.extension._pid.i == 0.0

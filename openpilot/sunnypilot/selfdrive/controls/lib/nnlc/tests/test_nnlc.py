@@ -43,25 +43,29 @@ def generate_modelV2():
   return model
 
 
+def make_controller(car_name):
+  params = Params()
+  params.put_bool("NeuralNetworkLateralControl", True, block=True)
+
+  CarInterface = interfaces[car_name]
+  CP = CarInterface.get_non_essential_params(car_name)
+  CP_SP = CarInterface.get_non_essential_params_sp(CP, car_name)
+  CI = CarInterface(CP, CP_SP)
+
+  sunnypilot_interfaces.setup_interfaces(CI, params)
+
+  CP_SP = convert_to_capnp(CP_SP)
+  VM = VehicleModel(CP)
+
+  controller = LatControlTorque(CP.as_reader(), CP_SP.as_reader(), CI, DT_CTRL)
+  return controller, VM, CP.lateralTuning.torque
+
+
 class TestNeuralNetworkLateralControl(OpenpilotTestCase):
 
   @parameterized.expand([HONDA.HONDA_CIVIC, TOYOTA.TOYOTA_RAV4, HYUNDAI.HYUNDAI_SANTA_CRUZ_1ST_GEN, GM.CHEVROLET_BOLT_EUV])
   def test_saturation(self, car_name):
-    params = Params()
-    params.put_bool("NeuralNetworkLateralControl", True, block=True)
-
-    CarInterface = interfaces[car_name]
-    CP = CarInterface.get_non_essential_params(car_name)
-    CP_SP = CarInterface.get_non_essential_params_sp(CP, car_name)
-    CI = CarInterface(CP, CP_SP)
-
-    sunnypilot_interfaces.setup_interfaces(CI, params)
-
-    CP_SP = convert_to_capnp(CP_SP)
-    VM = VehicleModel(CP)
-
-    controller = LatControlTorque(CP.as_reader(), CP_SP.as_reader(), CI, DT_CTRL)
-    torque_params = CP.lateralTuning.torque
+    controller, VM, torque_params = make_controller(car_name)
 
     CS = car.CarState.new_message()
     CS.vEgo = 30
@@ -102,3 +106,31 @@ class TestNeuralNetworkLateralControl(OpenpilotTestCase):
       controller.extension.update_limits()
       _, _, lac_log = controller.update(True, CS, VM, params, False, 1, pose, False, 0.2)
     assert lac_log.saturated
+
+  @parameterized.expand([HONDA.HONDA_CIVIC, HYUNDAI.HYUNDAI_SANTA_CRUZ_1ST_GEN])
+  def test_extension_pid_independent_of_host(self, car_name):
+    # the NN torque-space error must be driven by the extension's own constant-gain PID,
+    # not by the host controller's speed-scheduled lateral acceleration PID
+    controller, VM, torque_params = make_controller(car_name)
+
+    CS = car.CarState.new_message()
+    CS.vEgo = 2
+    CS.steeringPressed = False
+    params = log.VehicleParameters.new_message()
+    lp = generate_deviceMotion()
+    pose = Pose.from_device_motion(lp.deviceMotion)
+    model_v2 = generate_modelV2().modelV2
+
+    controller.extension.update_model_v2(model_v2)
+    controller.extension.update_lateral_lag(0.3)
+    controller.update_torque_parameters(torque_params.latAccelFactor, torque_params.latAccelOffset, torque_params.friction)
+    controller.extension.update_limits()
+    _, _, lac_log = controller.update(True, CS, VM, params, False, 0.01, pose, False, 0.2)
+
+    assert controller.extension._nnlc_enabled
+    assert controller.extension._pid is not controller.pid
+    assert controller.extension._pid.k_p == 1.0
+    assert controller.pid.k_p > 1.0  # the host schedule at 2 m/s, which must not reach the NN error
+    assert controller.extension._pid.pos_limit == controller.steer_max
+    assert lac_log.p == lac_log.error
+    assert abs(lac_log.output) <= controller.steer_max

@@ -42,3 +42,9 @@ class TestNNLCFingerprintBase(OpenpilotTestCase):
   def test_no_fingerprint(self, car_name):
     CI = self._setup_platform(car_name)
     assert CI.CP_SP.neuralNetworkLateralControl.model.name == "MOCK"
+
+  @parameterized.expand([(HYUNDAI.HYUNDAI_TUCSON_2025, "HYUNDAI_TUCSON_4TH_GEN")])
+  def test_substitute_model(self, car_name, model_name):
+    # cars with their own torque data but no model of their own must still map to the intended model, not to a fuzzy match
+    CI = self._setup_platform(car_name)
+    assert CI.CP_SP.neuralNetworkLateralControl.model.name == model_name and CI.CP_SP.neuralNetworkLateralControl.fuzzyFingerprint

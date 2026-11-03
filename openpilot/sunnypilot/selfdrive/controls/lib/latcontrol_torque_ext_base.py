@@ -61,7 +61,10 @@ class LatControlTorqueExtBase:
     self.torque_params = lac_torque.torque_params
 
     self._ff = 0.0
-    self._pid = PIDController(KP, KI)
+    # The extension runs its own PID in torque space, independent of the host controller's lateral acceleration PID
+    # (and of its speed-scheduled gains). The limits are set explicitly because update_limits() is only called by
+    # controlsd while live torque parameters are in use.
+    self._pid = PIDController(KP, KI, pos_limit=lac_torque.steer_max, neg_limit=-lac_torque.steer_max, rate=1 / lac_torque.dt)
     self._pid_log = None
     self._setpoint = 0.0
     self._measurement = 0.0
@@ -90,8 +93,10 @@ class LatControlTorqueExtBase:
 
     # Scaling the lateral acceleration "friction response" could be helpful for some.
     # Increase for a stronger response, decrease for a weaker response.
+    # NOTE: this was initialized to 0.7 but latched to 1.0 on the first frame without planned lateral jerk,
+    # so 1.0 is the value that has effectively been in use. It is kept at 1.0 to preserve that behavior.
     self.lat_jerk_friction_factor = 0.4
-    self.lat_accel_friction_factor = 0.7  # in [0, 3], in 0.05 increments. 3 is arbitrary safety limit
+    self.lat_accel_friction_factor = 1.0  # in [0, 3], in 0.05 increments. 3 is arbitrary safety limit
 
     # precompute time differences between ModelConstants.T_IDXS
     self.t_diffs = np.diff(ModelConstants.T_IDXS)
@@ -103,6 +108,9 @@ class LatControlTorqueExtBase:
 
   def update_lateral_lag(self, lag):
     self.desired_lat_jerk_time = max(0.01, lag) + LATERAL_LAG_MOD
+
+  def reset(self):
+    self._pid.reset()
 
   def update_friction_input(self, val_1, val_2):
     _error = val_1 - val_2
@@ -129,7 +137,6 @@ class LatControlTorqueExtBase:
       self.lookahead_lateral_jerk = get_lookahead_value(predicted_lateral_jerk[LAT_PLAN_MIN_IDX:friction_upper_idx], desired_lateral_jerk)
       if self.lookahead_lateral_jerk == 0.0:
         self.actual_lateral_jerk = 0.0
-        self.lat_accel_friction_factor = 1.0
       self.lateral_jerk_setpoint = self.lat_jerk_friction_factor * self.lookahead_lateral_jerk
       self.lateral_jerk_measurement = self.lat_jerk_friction_factor * self.actual_lateral_jerk
 
@@ -139,3 +146,8 @@ class LatControlTorqueExtBase:
                                            feedforward=self._ff,
                                            speed=CS.vEgo,
                                            freeze_integrator=freeze_integrator)
+    # log the PID that produced the output, not the host controller's
+    self._pid_log.p = float(self._pid.p)
+    self._pid_log.i = float(self._pid.i)
+    self._pid_log.d = float(self._pid.d)
+    self._pid_log.f = float(self._pid.f)

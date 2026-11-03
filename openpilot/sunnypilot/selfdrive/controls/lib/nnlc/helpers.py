@@ -15,6 +15,11 @@ TORQUE_NN_MODEL_PATH = os.path.join(BASEDIR, "openpilot", "sunnypilot", "neural_
 TORQUE_NN_MODEL_SUBSTITUTE_PATH = os.path.join(BASEDIR, "opendbc_repo", "opendbc", "car", "torque_data/substitute.toml")
 MOCK_MODEL_PATH = os.path.join(TORQUE_NN_MODEL_PATH, "MOCK.json")
 
+# cars with their own torque parameters (so they are not in the opendbc substitute list) but no model of their own
+NN_MODEL_SUBSTITUTE = {
+  "HYUNDAI_TUCSON_2025": "HYUNDAI_TUCSON_4TH_GEN",
+}
+
 
 def similarity(s1: str, s2: str) -> float:
   return SequenceMatcher(None, s1, s2).ratio()
@@ -53,7 +58,7 @@ def get_nn_model_path(CP: structs.CarParams) -> tuple[str, str, bool]:
     if 0.0 <= max_similarity < 0.9:
       with open(TORQUE_NN_MODEL_SUBSTITUTE_PATH, 'rb') as f:
         sub = tomllib.load(f)
-      sub_candidate = sub.get(car_fingerprint, car_fingerprint)
+      sub_candidate = NN_MODEL_SUBSTITUTE.get(car_fingerprint, sub.get(car_fingerprint, car_fingerprint))
 
       for candidate in [car_fingerprint, sub_candidate]:
         model_path, max_similarity = check_nn_path(candidate)

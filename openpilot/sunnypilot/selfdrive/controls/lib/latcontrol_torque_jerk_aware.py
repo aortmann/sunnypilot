@@ -8,6 +8,7 @@ from opendbc.car.lateral import FRICTION_THRESHOLD
 from opendbc.sunnypilot.car.interfaces import LatControlInputs
 from opendbc.sunnypilot.car.lateral_ext import get_friction as get_friction_in_torque_space
 from openpilot.common.params import Params
+from openpilot.common.pid import PIDController
 
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_ext_base import LatControlTorqueExtBase
 
@@ -17,6 +18,14 @@ class LatControlTorqueJerkAware(LatControlTorqueExtBase):
     super().__init__(lac_torque, CP, CP_SP, CI)
     self.params = Params()
     self._jerk_aware_enabled = self.params.get_bool("LateralJerkTorqueController")
+
+    # The jerk-aware controller converts lateral acceleration to torque with the plain linear law and has no
+    # low-speed compensation of its own, so it keeps the host controller's speed-scheduled gains, in its own PID.
+    # NNLC has its own low-speed term and must never see these gains, so keep the base PID if it is also enabled
+    # (both toggles on is a transient state that gets cleaned up; the controllers are mutually exclusive).
+    if self._jerk_aware_enabled and not self.params.get_bool("NeuralNetworkLateralControl"):
+      self._pid = PIDController(lac_torque.pid._k_p, lac_torque.pid._k_i, pos_limit=lac_torque.steer_max,
+                                neg_limit=-lac_torque.steer_max, rate=1 / lac_torque.dt)
 
   def update_limits(self):
     if not self._jerk_aware_enabled:
